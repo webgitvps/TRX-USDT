@@ -18,59 +18,69 @@ def save_okx_version(version):
     with open(VERSION_FILE, "w") as f:
         f.write(str(version))
 
-def write_log(source, price):
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_entry = f"[{now}] ({source}) TRX: {price}\n"
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(log_entry)
-    print(f"写入成功: {log_entry.strip()}")
-
-def fetch_price():
+def fetch_all_rates():
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
-    # --- 策略 1: 欧意 (OKX) 自动探测逻辑 ---
+    usd_cny = 0.0
+    trx_usdt = 0.0
+    source = "Unknown"
+
+    # --- 1. 获取 USDT/CNY 汇率 ---
+    try:
+        curr_url = "https://www.okx.com/api/v5/market/exchange-rate"
+        curr_res = requests.get(curr_url, headers=headers, timeout=10).json()
+        if curr_res.get('code') == "0" and len(curr_res.get('data', [])) > 0:
+            # 按照你提供的格式解析 {"usdCny":"6.894"}
+            usd_cny = float(curr_res['data'][0]['usdCny'])
+    except Exception as e:
+        print(f"汇率接口调用失败: {e}")
+        usd_cny = 7.2  # 极端情况下的保底参考值
+
+    # --- 2. 获取 TRX/USDT (OKX版本自适应 + 冗余备份) ---
     okx_v = get_current_okx_version()
-    # 尝试当前版本及后续两个版本
+    found_trx = False
+    
+    # 优先尝试 OKX
     for v in range(okx_v, okx_v + 3):
-        url = f"https://www.okx.com/api/v{v}/market/ticker?instId=TRX-USDT"
         try:
-            response = requests.get(url, headers=headers, timeout=10)
-            res_json = response.json()
-            # 校验你提供的 JSON 规律
-            if res_json.get('code') == "0" and "data" in res_json and len(res_json['data']) > 0:
-                price = res_json['data'][0]['last']
+            url = f"https://www.okx.com/api/v{v}/market/ticker?instId=TRX-USDT"
+            res = requests.get(url, headers=headers, timeout=10).json()
+            if res.get('code') == "0" and len(res.get('data', [])) > 0:
+                trx_usdt = float(res['data'][0]['last'])
+                source = f"OKX_v{v}"
                 if v != okx_v:
                     save_okx_version(v)
-                write_log(f"OKX_v{v}", price)
-                return
+                found_trx = True
+                break
         except:
             continue
 
-    # --- 策略 2: 火必 (HTX) 备用 ---
-    try:
-        url_htx = "https://api.huobi.pro/market/detail/merged?symbol=trxusdt"
-        res_htx = requests.get(url_htx, headers=headers, timeout=10).json()
-        if res_htx.get('status') == "ok":
-            price = res_htx['tick']['close']
-            write_log("HTX", price)
-            return
-    except:
-        pass
+    # 如果 OKX 失败，尝试火必 (HTX)
+    if not found_trx:
+        try:
+            res_htx = requests.get("https://api.huobi.pro/market/detail/merged?symbol=trxusdt", timeout=10).json()
+            if res_htx.get('status') == "ok":
+                trx_usdt = float(res_htx['tick']['close'])
+                source = "HTX"
+                found_trx = True
+        except:
+            pass
 
-    # --- 策略 3: Gate.io 备用 ---
-    try:
-        url_gate = "https://api.gateio.ws/api/v4/spot/tickers?currency_pair=TRX_USDT"
-        res_gate = requests.get(url_gate, headers=headers, timeout=10).json()
-        if isinstance(res_gate, list) and len(res_gate) > 0:
-            price = res_gate[0]['last']
-            write_log("Gate", price)
-            return
-    except:
-        pass
-
-    print("错误：所有监控平台均未返回有效数据。")
+    # --- 3. 计算并覆盖写入 ---
+    if found_trx and usd_cny > 0:
+        trx_cny = round(trx_usdt * usd_cny, 4)
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 构造单行输出：时间 | 来源 | USDT兑人民币 | TRX兑USDT | TRX兑人民币
+        log_entry = f"[{now}] ({source}) USDT/CNY: {usd_cny} | TRX/USDT: {trx_usdt} | TRX/CNY: {trx_cny}"
+        
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            f.write(log_entry)
+        print(f"数据已更新: {log_entry}")
+    else:
+        print("错误：未能获取完整数据，未更新文件。")
 
 if __name__ == "__main__":
-    fetch_price()
+    fetch_all_rates()
