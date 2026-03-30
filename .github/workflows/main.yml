@@ -1,0 +1,52 @@
+name: TRX Price Auto Monitor
+
+# 配置触发条件
+on:
+  schedule:
+    # 每 5 分钟运行一次 (GitHub Actions 的 cron 可能有几分钟延迟)
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # 允许你在 GitHub 页面上手动点击 "Run workflow" 测试
+
+jobs:
+  fetch_and_log:
+    runs-on: ubuntu-latest
+    
+    # 授予 Actions 修改仓库文件的权限（非常重要）
+    permissions:
+      contents: write
+
+    steps:
+      - name: 1. 检出代码
+        uses: actions/checkout@v4
+
+      - name: 2. 安装 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 3. 安装必要的依赖库
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: 4. 执行获取汇率脚本
+        run: python fetch_price.py
+
+      - name: 5. 提交数据变更到仓库
+        run: |
+          # 配置 Git 机器人信息
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # 将日志文件和版本记录文件加入暂存区
+          # 如果文件不存在，git add 会自动创建（如果是脚本生成的）
+          git add price_log.txt api_version.txt || true
+          
+          # 检查是否有内容变更，如果有则提交
+          # [skip ci] 确保自动提交不会再次触发 Action 导致死循环
+          if ! git diff --cached --quiet; then
+            git commit -m "自动更新: TRX 汇率及 API 版本检查 [skip ci]"
+            git push
+          else
+            echo "数据无变化，跳过提交。"
+          fi
